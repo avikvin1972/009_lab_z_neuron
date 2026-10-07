@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="ru" translate="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="google" content="notranslate">
+<title>Фонемы — распознавание звуков английского</title>
+<style>
+/* STANDALONE-ONLY: общие переменные и страница (при вставке в index.html не нужны) */
+:root{--bg:#f6f8f9;--fg:#15232b;--mut:#56666e;--card:#fff;--line:#c9d5da;--acc:#1c5f8a;--btnfg:#fff;--ref:#d85a30}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1a20;--fg:#e6eef1;--mut:#9fb0b8;--card:#17262d;--line:#2b3d46;--acc:#7cc0ea;--btnfg:#0f1a20;--ref:#ff9a6b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px 14px 44px}
+/* PHONEME-BLOCK: стили блока (копируются при вставке) */
+#phRoot h1{font-size:1.3rem;margin:0 0 10px}
+#phRoot h3{font-size:.95rem;margin:14px 0 5px}
+#phRoot button,#phRoot select,#phRoot .fbtn{font:inherit;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);margin:4px 6px 4px 0;cursor:pointer;display:inline-block}
+#phRoot button.p{background:var(--acc);color:var(--btnfg);border:0;font-weight:600}
+#phRoot canvas{width:100%;display:block;background:var(--card);border-radius:8px;border:1px solid var(--line);touch-action:none}
+#phRoot input[type=range]{width:100%}
+#phRoot input[type=text]{width:100%;font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+#phRoot label{display:block;margin-top:7px}
+#phRoot .m{color:var(--mut)}
+#phRoot .status{white-space:pre-line}
+#phRoot .card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:10px;margin-top:10px}
+#phRoot .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#phRoot .metric{padding:7px;border:1px solid var(--line);border-radius:7px}
+#phRoot .metric b{display:block;font-size:1.3rem}
+#phRoot .note{font-size:.88rem}
+</style>
+</head>
+<body>
+<main>
+<div id="phRoot">
+<h1>Фонемы английского: нейросеть</h1>
+<div class="card">
+ <button id="phMic" class="p">Запись с микрофона</button>
+ <label class="fbtn" for="phFile">Открыть файл</label><input id="phFile" type="file" accept="audio/*,video/*,.wav,.mp3,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.aiff,.aif,.amr" hidden>
+ <p class="m note" style="margin:4px 0 0">Касание волны ставит точку анализа, протяжка выделяет фрагмент.</p>
+</div>
+<div class="card">
+ <canvas id="phCv" width="720" height="250"></canvas>
+ <p id="phI" class="m note" style="margin:6px 0 0"></p>
+ <button id="phAll">Выделить всё</button><button id="phZm">Увеличить фрагмент</button><button id="phPl">Прослушать фрагмент</button>
+ <label>Точка анализа <span id="phTv" class="m">0 мс</span><input id="phT" type="range" min="0" max="1000" value="0" step="1"></label>
+ <button id="phSel">Центр выделения</button><button id="phGo" class="p">Определить</button><button id="phAn">Разметить фрагмент</button>
+ <div id="phR" class="note" style="margin-top:8px"></div>
+</div>
+<div class="card">
+ <h3 style="margin-top:0">Модель</h3>
+ <label>Диалект<select id="phD"></select></label>
+ <label>Шагов предобучения на синтетике<select id="phN"><option value="600">600</option><option value="1500" selected>1500</option><option value="3000">3000</option></select></label>
+ <button id="phTr" class="p">Предобучить на синтетике</button><button id="phSt">Стоп</button>
+ <h3>Обучение по записи с текстом</h3>
+ <label>Фонемы выделенного фрагмента через пробел<input id="phTx" type="text" placeholder="w ɔ ɾ ɚ"></label>
+ <button id="phAl">Выровнять</button><button id="phFt">Добавить и дообучить</button>
+ <p id="phS" class="m status" role="status"></p>
+</div>
+</div>
+</main>
+<script>
+(()=>{
+'use strict';
+const SR=16000,NBM=40,CTX=[-8,-4,-2,0,2,4,8],FD=NBM+2,DIN=FD*CTX.length,HOP=.01,WIN=.025,H1=128,H2=64;
+const TR='t\u031A',MS='m\u0329',NN='n\u0329',LL='l\u0329',TH='t\u02B0';
+const VW={'i':[270,2290,3010,90],'iː':[270,2290,3010,140],'ɪ':[390,1990,2550,70],'ɛ':[530,1840,2480,90],'e':[530,1840,2480,90],'æ':[660,1720,2410,110],
+'ɑ':[730,1090,2440,110],'ɑː':[730,1090,2440,150],'ɒ':[600,900,2500,90],'ɔ':[570,840,2410,110],'ɔː':[570,840,2410,150],'ʊ':[440,1020,2240,70],
+'u':[300,870,2240,100],'uː':[300,870,2240,140],'ʌ':[640,1190,2390,80],'ə':[500,1500,2500,50],'ɝ':[490,1350,1690,130],'ɜː':[490,1350,1690,150],'ɚ':[490,1350,1690,70],
+'eɪ':[530,1840,2480,150,390,1990,2550],'oʊ':[570,840,2410,150,440,1020,2240],'əʊ':[500,1500,2500,150,440,1020,2240],'aɪ':[730,1090,2440,170,390,1990,2550],
+'aʊ':[730,1090,2440,170,440,1020,2240],'ɔɪ':[570,840,2410,170,390,1990,2550],'ɪə':[390,1990,2550,130,500,1500,2500],'eə':[530,1840,2480,130,500,1500,2500],'ʊə':[440,1020,2240,130,500,1500,2500]};
+const CS={'p':['S',0,900],'b':['S',1,900],'t':['S',0,4200],'d':['S',1,4200],'k':['S',0,2200],'g':['S',1,2200],[TH]:['S',0,4200,1],[TR]:['Q',70],'ʔ':['Q',45],
+'f':['F',0,4500,3000,.25],'v':['F',1,4500,3000,.25],'θ':['F',0,5500,3000,.2],'ð':['F',1,5500,3000,.2],'s':['F',0,6500,1500,1],'z':['F',1,6500,1500,1],
+'ʃ':['F',0,3000,1200,1],'ʒ':['F',1,3000,1200,1],'h':['F',0,1800,3000,.3],'tʃ':['Z',0,3000],'dʒ':['Z',1,3000],
+'m':['N',250,1100,2100,70],'n':['N',250,1600,2500,70],'ŋ':['N',250,2000,2800,80],[MS]:['N',300,1100,2100,100],[NN]:['N',300,1600,2500,100],
+'l':['A',360,1300,2700,70],'ɫ':['A',400,900,2500,80],'r':['A',350,1200,1500,80],'j':['A',280,2200,3000,60],'w':['A',300,700,2200,70],'ʍ':['A',300,700,2200,80,1],
+[LL]:['A',400,1000,2600,100],'ɾ':['A',400,1500,2500,25]};
+const CONS='p b t d k g f v θ ð s z ʃ ʒ h tʃ dʒ m n ŋ l r j w'.split(' ');
+const DIAL={us:{n:'Американский',v:'i ɪ eɪ ɛ æ ɑ ɔ oʊ ʊ u ʌ ə ɝ ɚ aɪ aʊ ɔɪ'.split(' '),a:['ʍ','ɫ',TR,MS,NN,LL,'ɾ','ʔ',TH]},
+ uk:{n:'Британский RP',v:'iː ɪ e æ ɑː ɒ ɔː ʊ uː ʌ ɜː ə eɪ əʊ aɪ aʊ ɔɪ ɪə eə ʊə'.split(' '),a:['ɫ',TH,TR,'ʔ',NN,LL]}};
+for(const d in DIAL){const o=DIAL[d];o.cl=['sil',...o.v,...CONS,...o.a];o.ix={};o.cl.forEach((s,i)=>o.ix[s]=i)}
+const typ=s=>s==='sil'?'пауза':VW[s]?'гласная':(s===MS||s===NN||s===LL)?'слоговая согласная':'согласная';
+const rnd=(a,b)=>a+Math.random()*(b-a),pick=a=>a[Math.floor(Math.random()*a.length)],tick=()=>new Promise(r=>setTimeout(r));
+let M={},REAL={us:[],uk:[]},busy=false,stop=false;
+
+/* ---------- синтезатор: источник голоса + каскад из 3 формант + шум ---------- */
+function synth(seq){
+ const sc=rnd(.8,1.4),scf=[0,1,2].map(()=>sc*rnd(.94,1.06)),sp=rnd(.8,1.3),f0=rnd(75,320),lc=rnd(.15,.6),fg=rnd(.4,1.3),out=[],lab=[];
+ let pf=[500,1500,2500],ph=0,lp=0;const y=[[0,0],[0,0],[0,0]],bq=[0,0];
+ const co=(f,bw)=>{const r=Math.exp(-Math.PI*bw/SR),c=-r*r,b=2*r*Math.cos(2*Math.PI*f/SR);return [1-b-c,b,c]};
+ function gen(ms,o){
+  const L=Math.max(1,Math.round(ms*sp*SR/1000)),fa=o.fa||pf,fb=o.fb||fa,vA=o.v||0,nA=o.n||0,as=o.as||0,gl=Math.min(L*.5,.035*SR),s0=out.length,B=nA?co(o.bp[0],o.bp[1]):null;
+  const C=[null,null,null];
+  for(let i=0;i<L;i++){
+   if(!(i&7)){const t=i/L;for(let k=0;k<3;k++){const tg=(fa[k]+(fb[k]-fa[k])*t)*scf[k],f=i<gl?pf[k]*scf[k]*(1-i/gl)+tg*(i/gl):tg;C[k]=co(Math.min(f,SR/2-300),[60,90,150][k])}}
+   ph+=f0*(1+.1*Math.sin(out.length/9000))/SR;if(ph>=1)ph-=1;
+   lp+=lc*((2*ph-1)-lp);
+   let u=lp*vA+(Math.random()*2-1)*as;
+   for(let k=0;k<3;k++){const c=C[k],v=c[0]*u+c[1]*y[k][0]+c[2]*y[k][1];y[k][1]=y[k][0];y[k][0]=v;u=v}
+   if(B){const w=Math.random()*2-1,v=B[0]*w+B[1]*bq[0]+B[2]*bq[1];bq[1]=bq[0];bq[0]=v;u+=v*nA}
+   out.push(u);
+  }
+  if(!o.hold)pf=fb;
+  return [s0,out.length];
+ }
+ for(const s of seq){
+  let r;
+  if(s==='sil')r=gen(rnd(50,120),{hold:1});
+  else if(VW[s]){const v=VW[s];r=gen(v[3],{fa:v.slice(0,3),fb:v[4]?v.slice(4,7):v.slice(0,3),v:1})}
+  else{const c=CS[s],k=c[0];
+   if(k==='S'){const a=out.length;gen(rnd(50,80),{v:c[1]?.15:0,hold:1});gen(10,{n:1.2,bp:[c[2],1500],hold:1});if(c[3])gen(60,{as:.35,hold:1});else if(!c[1])gen(25,{as:.2,hold:1});r=[a,out.length]}
+   else if(k==='Q')r=gen(c[1],{hold:1,v:s===TR?0:.05});
+   else if(k==='F')r=gen(rnd(70,110),{n:c[4]*1.5*fg,bp:[c[2],c[3]],v:c[1]?.25:0,as:s==='h'?.35:0,hold:1});
+   else if(k==='Z'){const a=out.length;gen(rnd(35,50),{v:c[1]?.1:0,hold:1});gen(rnd(70,100),{n:1.5*fg,bp:[c[2],1200],v:c[1]?.25:0,hold:1});r=[a,out.length]}
+   else if(k==='N')r=gen(c[4],{fa:c.slice(1,4),v:.5});
+   else r=gen(c[4],{fa:c.slice(1,4),v:c[5]?0:.8,as:c[5]?.4:0});
+  }
+  lab.push([s,r[0],r[1]]);
+ }
+ const nz=rnd(.0002,.02),x=new Float32Array(out.length);let m=1e-9;
+ for(let i=0;i<x.length;i++){x[i]=out[i]+(Math.random()*2-1)*nz*8;const a=Math.abs(x[i]);if(a>m)m=a}
+ for(let i=0;i<x.length;i++)x[i]/=m;
+ return {x,lab};
+}
+function utt(d){
+ const V=DIAL[d].v,seq=['sil'],nw=1+Math.floor(Math.random()*3);
+ for(let w=0;w<nw;w++){
+  const ws=[],ns=1+Math.floor(Math.random()*3);
+  for(let s=0;s<ns;s++){
+   const on=pick([0,1,1,1,2]),cd=pick([0,0,1,1,2]);
+   for(let i=0;i<on;i++)ws.push(pick(CONS));
+   ws.push(pick(V));
+   for(let i=0;i<cd;i++)ws.push(pick(CONS));
+  }
+  for(let i=0;i<ws.length;i++){const s=ws[i],p=ws[i-1],n=ws[i+1],r=Math.random();
+   if(s==='t'){if(i===0&&r<.8)ws[i]=TH;else if(d==='us'&&VW[p]&&VW[n]&&r<.6)ws[i]='ɾ';else if(i===ws.length-1&&r<.4)ws[i]=TR;else if(VW[p]&&n==='n'&&r<.2)ws[i]='ʔ'}
+   else if(s==='l'&&!VW[n]&&r<.8)ws[i]='ɫ';
+   else if(s==='w'&&i===0&&d==='us'&&r<.1)ws[i]='ʍ';
+   else if(i>0&&i===ws.length-1&&!VW[p]&&r<.3){if(s==='n')ws[i]=NN;else if(s==='l')ws[i]=LL;else if(s==='m'&&d==='us')ws[i]=MS}
+  }
+  seq.push(...ws,'sil');
+ }
+ return seq;
+}
+
+/* ---------- признаки: лог-мел 40 полос + энергия относительно пика, контекст из 7 кадров ---------- */
+const fbC={};
+function bank(sr,NF){
+ const key=sr+'_'+NF;if(fbC[key])return fbC[key];
+ const FM=Math.min(7600,sr/2-50),mel=f=>2595*Math.log10(1+f/700),im=m=>700*(10**(m/2595)-1),e=[];
+ for(let k=0;k<NBM+2;k++)e.push(im(mel(FM)*k/(NBM+1)));
+ const hz=sr/NF,B=[];
+ for(let b=1;b<=NBM;b++){const w=[],lo=e[b-1],c=e[b],hi=e[b+1];
+  for(let i=Math.floor(lo/hz);i<=Math.ceil(hi/hz);i++){const f=i*hz,v=f<=c?(f-lo)/(c-lo):(hi-f)/(hi-c);if(v>0)w.push([i,v])}
+  B.push(w)}
+ return fbC[key]=B;
+}
+function frames(x,sr,ref){
+ const N=Math.round(WIN*sr),Hh=Math.round(HOP*sr),NF=nextPow2(N),B=bank(sr,NF),out=[],q=Math.max(1,Math.round(sr/8000)),n8=Math.floor(x.length/q),xd=new Float32Array(n8),s8=sr/q;
+ for(let i=0;i<n8;i++){let a=0;for(let j=0;j<q;j++)a+=x[i*q+j];xd[i]=a/q}
+ const WL=256,l0=Math.max(2,Math.floor(s8/400)),l1=Math.min(WL-40,Math.ceil(s8/70));
+ for(let p=0;p+N<=x.length;p+=Hh){
+  const sub=x.subarray(p,p+N);let s=0;for(let j=0;j<N;j++)s+=sub[j]*sub[j];
+  const m=magPadded(sub,sr,NF),f=new Float32Array(FD);let a=0;
+  for(let b=0;b<NBM;b++){let q2=0;for(const [i,v] of B[b])if(i<m.length)q2+=v*10**(m[i]/10);f[b]=10*Math.log10(q2+1e-12);a+=f[b]}
+  a/=NBM;for(let b=0;b<NBM;b++)f[b]-=a;
+  f[NBM]=Math.max(-70,10*Math.log10(s/N/(ref*ref)+1e-12))/10;
+  const c=Math.round((p+N/2)/q),st=Math.min(Math.max(0,c-WL/2),n8-WL);
+  if(st>=0&&s/N>1e-7*ref*ref){let mn=0;for(let i=0;i<WL;i++)mn+=xd[st+i];mn/=WL;let e0=0;for(let i=0;i<WL;i++)e0+=(xd[st+i]-mn)**2;
+   let best=0;for(let l=l0;l<=l1;l++){let r=0;for(let i=0;i<WL-l;i++)r+=(xd[st+i]-mn)*(xd[st+i+l]-mn);r/=(e0*(WL-l)/WL+1e-12);if(r>best)best=r}
+   f[NBM+1]=Math.min(1,Math.max(0,best))*3}
+  out.push(f);
+ }
+ return out;
+}
+const stack=(F,t)=>{const z=new Float32Array(DIN);CTX.forEach((c,j)=>z.set(F[Math.min(F.length-1,Math.max(0,t+c))],j*FD));return z};
+function mk(d){
+ const D=DIAL[d],u=synth(utt(d)),F=frames(u.x,SR,rnd(.8,4)),N=Math.round(WIN*SR),Hh=Math.round(HOP*SR),r=[];let j=0;
+ for(let t=0;t<F.length;t++){if(t===0){const sl=rnd(-8,8),k1=rnd(0,NBM),k2=rnd(-5,5),c0=rnd(-3,3),cv=new Float32Array(NBM);for(let b=0;b<NBM;b++)cv[b]=sl*(b/NBM-.5)*2+k2*Math.exp(-(((b-k1)/6)**2))+c0;for(const f of F)for(let b=0;b<NBM;b++)f[b]+=cv[b]}
+  const c=t*Hh+N/2;while(j<u.lab.length-1&&c>=u.lab[j][2])j++;r.push({x:stack(F,t),y:D.ix[u.lab[j][0]]})}
+ return r;
+}
+
+/* ---------- сеть: Dense+ReLU, softmax, Adam ---------- */
+function init(sz){return sz.slice(1).map((o,k)=>{const i=sz[k],W=new Float32Array(i*o),s=Math.sqrt(2/i);for(let j=0;j<W.length;j++)W[j]=(Math.random()+Math.random()+Math.random()-1.5)*2*s;return {i,o,W,b:new Float32Array(o)}})}
+const adam=L=>L.map(l=>({mW:new Float32Array(l.W.length),vW:new Float32Array(l.W.length),mb:new Float32Array(l.b.length),vb:new Float32Array(l.b.length)}));
+function fwd(L,x){
+ const A=[x];let h=x;
+ for(let k=0;k<L.length;k++){const l=L[k],y=new Float32Array(l.o);
+  for(let o=0;o<l.o;o++){let s=l.b[o];const w=o*l.i;for(let i=0;i<l.i;i++)s+=l.W[w+i]*h[i];y[o]=k<L.length-1&&s<0?0:s}
+  A.push(y);h=y}
+ let mx=-1e9;for(const v of h)if(v>mx)mx=v;
+ const p=new Float32Array(h.length);let t=0;for(let i=0;i<p.length;i++){p[i]=Math.exp(h[i]-mx);t+=p[i]}
+ for(let i=0;i<p.length;i++)p[i]/=t;
+ return {A,p};
+}
+function step(L,S2,batch,lr,t){
+ const G=L.map(l=>({W:new Float32Array(l.W.length),b:new Float32Array(l.b.length)}));let loss=0;
+ for(const s of batch){
+  const {A,p}=fwd(L,s.x);loss-=Math.log(p[s.y]+1e-9);
+  let d=Float32Array.from(p);d[s.y]-=1;
+  for(let k=L.length-1;k>=0;k--){const l=L[k],a=A[k],g=G[k],nd=k?new Float32Array(l.i):null;
+   for(let o=0;o<l.o;o++){const dv=d[o];if(!dv)continue;g.b[o]+=dv;const w=o*l.i;for(let i=0;i<l.i;i++){g.W[w+i]+=dv*a[i];if(nd)nd[i]+=dv*l.W[w+i]}}
+   if(nd)for(let i=0;i<l.i;i++)if(a[i]<=0)nd[i]=0;
+   d=nd}
+ }
+ const n=batch.length,b1=.9,b2=.999,c1=1-b1**t,c2=1-b2**t;
+ L.forEach((l,k)=>{const g=G[k],m=S2[k];
+  for(const [P,Gr,Mo,V,dec] of [[l.W,g.W,m.mW,m.vW,1e-4],[l.b,g.b,m.mb,m.vb,0]])
+   for(let j=0;j<P.length;j++){const gr=Gr[j]/n+dec*P[j];Mo[j]=b1*Mo[j]+(1-b1)*gr;V[j]=b2*V[j]+(1-b2)*gr*gr;P[j]-=lr*(Mo[j]/c1)/(Math.sqrt(V[j]/c2)+1e-8)}});
+ return loss/n;
+}
+const nm=(m,x)=>{const z=new Float32Array(DIN);for(let i=0;i<DIN;i++)z[i]=(x[i]-m.mu[i])/m.sd[i];return z};
+function newModel(d){
+ const fr=[];for(let i=0;i<25;i++)fr.push(...mk(d));
+ const n=fr.length,mu=new Float32Array(DIN),sd=new Float32Array(DIN);
+ for(const s of fr)for(let i=0;i<DIN;i++)mu[i]+=s.x[i]/n;
+ for(const s of fr)for(let i=0;i<DIN;i++)sd[i]+=(s.x[i]-mu[i])**2/n;
+ for(let i=0;i<DIN;i++)sd[i]=Math.sqrt(sd[i])+1e-3;
+ const L=init([DIN,H1,H2,DIAL[d].cl.length]);
+ return M[d]={mu,sd,L,S2:adam(L),t:0,acc:null};
+}
+function synB(d,m){const fr=[...mk(d),...mk(d)],b=[];for(let i=0;i<256;i++){const s=fr[Math.floor(Math.random()*fr.length)];b.push({x:nm(m,s.x),y:s.y})}return b}
+function realB(d,m){const R=REAL[d],b=[];for(let i=0;i<192;i++){const s=R[Math.floor(Math.random()*R.length)];b.push({x:nm(m,s.x),y:s.y})}const e=synB(d,m);return b.concat(e.slice(0,96))}
+async function train(d,steps,lr0,mkB,tag){
+ const m=M[d];stop=false;
+ for(let e=1;e<=steps&&!stop;e++){
+  m.t++;const loss=step(m.L,m.S2,mkB(d,m),lr0*(1-.8*e/steps),m.t);
+  if(e%5===0||e===steps){say(tag+': шаг '+e+'/'+steps+', потеря '+loss.toFixed(2));await tick()}
+ }
+}
+function evalSyn(d){const m=M[d],cl=DIAL[d].cl,isV=i=>!!VW[cl[i]];let c=0,n=0,v=0,vn=0;for(let i=0;i<10;i++)for(const s of mk(d)){const a=am(fwd(m.L,nm(m,s.x)).p);if(a===s.y)c++;n++;if(isV(s.y)){vn++;if(isV(a))v++}}return {a:Math.round(c/n*100),v:Math.round(v/Math.max(1,vn)*100)}}
+const am=p=>{let b=0;for(let i=1;i<p.length;i++)if(p[i]>p[b])b=i;return b};
+
+/* ---------- хранилище ---------- */
+const kv=(m,k,v)=>new Promise((ok,no)=>{const q=indexedDB.open('pl_ph',1);q.onupgradeneeded=()=>q.result.createObjectStore('kv');q.onerror=()=>no(q.error);
+ q.onsuccess=()=>{const db=q.result,s=db.transaction('kv',m==='get'?'readonly':'readwrite').objectStore('kv'),r=m==='get'?s.get(k):s.put(v,k);r.onsuccess=()=>{ok(r.result);db.close()};r.onerror=()=>{no(r.error);db.close()}}});
+const ser=m=>({mu:Array.from(m.mu),sd:Array.from(m.sd),acc:m.acc,L:m.L.map(l=>({i:l.i,o:l.o,W:Array.from(l.W),b:Array.from(l.b)}))});
+const des=(o,d)=>{if(!o||!o.L||o.L[0].i!==DIN||o.L[o.L.length-1].o!==DIAL[d].cl.length)return null;const L=o.L.map(l=>({i:l.i,o:l.o,W:Float32Array.from(l.W),b:Float32Array.from(l.b)}));return {mu:Float32Array.from(o.mu),sd:Float32Array.from(o.sd),L,S2:adam(L),t:0,acc:o.acc}};
+
+/* ---------- распознавание вокруг бегунка ---------- */
+const PK=new WeakMap();
+function peak(){let p=PK.get(S.d);if(!p){p=1e-6;for(let i=0;i<S.d.length;i++){const a=Math.abs(S.d[i]);if(a>p)p=a}PK.set(S.d,p)}return p}
+function smooth(LP,pen){
+ const T=LP.length,K=LP[0].length,bp=new Int16Array(T*K);let D=Float32Array.from(LP[0]);
+ for(let t=1;t<T;t++){let bi=0;for(let k=1;k<K;k++)if(D[k]>D[bi])bi=k;const sw=D[bi]-pen,N2=new Float32Array(K);
+  for(let k=0;k<K;k++){if(D[k]>=sw){N2[k]=D[k]+LP[t][k];bp[t*K+k]=k}else{N2[k]=sw+LP[t][k];bp[t*K+k]=bi}}
+  D=N2}
+ let k=0;for(let i=1;i<K;i++)if(D[i]>D[k])k=i;
+ const p=new Int16Array(T);for(let t=T-1;t>=0;t--){p[t]=k;k=bp[t*K+k]}
+ return p;
+}
+function posts(x,sr,m){const F=frames(x,sr,peak());return F.map((_,t)=>fwd(m.L,nm(m,stack(F,t))).p)}
+/* ---------- принудительное выравнивание по заданным фонемам ---------- */
+function forced(LP,seq){
+ const T=LP.length,J=seq.length;if(T<J)throw new Error('запись короче текста');
+ const bp=new Uint8Array(T*J);let D=new Float32Array(J).fill(1e9);D[0]=-LP[0][seq[0]];
+ for(let t=1;t<T;t++){const N2=new Float32Array(J).fill(1e9);
+  for(let j=0;j<J;j++){const st=D[j],ad=j?D[j-1]:1e9,u=ad<st;N2[j]=(u?ad:st)-LP[t][seq[j]];bp[t*J+j]=u?1:0}
+  D=N2}
+ const out=new Int16Array(T);let j=J-1;
+ for(let t=T-1;t>=0;t--){out[t]=seq[j];if(t&&bp[t*J+j])j--}
+ return out;
+}
+
+
+/* ---------- собственные вспомогательные функции (БПФ, мел-признаки используют их) ---------- */
+const $=id=>document.getElementById(id);
+function nextPow2(n){let p=1;while(p<n)p<<=1;return p}
+function fft(re,im){const n=re.length;
+ for(let i=1,j=0;i<n;i++){let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;if(i<j){let t=re[i];re[i]=re[j];re[j]=t;t=im[i];im[i]=im[j];im[j]=t}}
+ for(let len=2;len<=n;len<<=1){const ang=-2*Math.PI/len,wr=Math.cos(ang),wi=Math.sin(ang);
+  for(let i=0;i<n;i+=len){let cr=1,ci=0;
+   for(let k=0;k<len/2;k++){const a=i+k,b=a+len/2,tr=re[b]*cr-im[b]*ci,ti=re[b]*ci+im[b]*cr;re[b]=re[a]-tr;im[b]=im[a]-ti;re[a]+=tr;im[a]+=ti;const nr=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=nr}}}}
+function magPadded(x,sr,N){
+ const re=new Float32Array(N),im=new Float32Array(N),L=x.length;
+ for(let i=0;i<L;i++)re[i]=x[i]*(.5-.5*Math.cos(2*Math.PI*i/Math.max(1,L-1)));
+ fft(re,im);const m=new Float32Array(N/2);
+ for(let i=0;i<m.length;i++)m[i]=20*Math.log10(Math.hypot(re[i],im[i])/Math.max(1,L)*2+1e-12);
+ return m;
+}
+$('phD').innerHTML=Object.keys(DIAL).map(k=>'<option value="'+k+'">'+DIAL[k].n+' — '+(DIAL[k].cl.length-1)+' звуков</option>').join('');
+let S=null,sel=[0,0],V=[0,0],LR=[],ac=null,rec=null;
+const dur=()=>S?S.d.length/S.sr*1000:0,say=t=>$('phS').textContent=t,dia=()=>$('phD').value;
+const ctx=()=>ac||(ac=new (window.AudioContext||window.webkitAudioContext)());
+const seg=()=>S.d.subarray(Math.floor(sel[0]*S.sr/1000),Math.floor(sel[1]*S.sr/1000));
+
+/* ---------- распознавание: окно вокруг точки и разметка фрагмента ---------- */
+function label(a0,b0,d){
+ const m=M[d],sr=S.sr,cl=DIAL[d].cl,P=posts(S.d.subarray(a0,b0),sr,m);if(P.length<5)return null;
+ const gi=cl.map(c=>c==='sil'?0:VW[c]?1:2),
+  LP=P.map(p=>{const g=[1e-3,1e-3,1e-3];for(let k=0;k<p.length;k++)g[gi[k]]+=p[k];return Array.from(p,(v,k)=>Math.log(v+1e-6)+.7*Math.log(g[gi[k]]))}),
+  pa=smooth(LP,5),t0=a0/sr*1000,bd=k=>t0+(k*HOP+WIN/2-HOP/2)*1000,runs=[];
+ let s=0;
+ for(let k=1;k<=pa.length;k++)if(k===pa.length||pa[k]!==pa[s]){
+  let c=0;for(let j=s;j<k;j++)c+=P[j][pa[s]];
+  runs.push({s:cl[pa[s]],a:s?bd(s):t0,b:bd(k),c:c/(k-s)});s=k}
+ return {runs,P,gi,t0};
+}
+function recog(tms,d){
+ const sr=S.sr,a0=Math.max(0,Math.floor((tms/1000-.4)*sr)),b0=Math.min(S.d.length,Math.ceil((tms/1000+.4)*sr)),r=label(a0,b0,d);
+ if(!r)return null;
+ const {runs,P,gi,t0}=r;let i=runs.findIndex(x=>tms>=x.a&&tms<x.b);if(i<0)i=tms<runs[0].a?0:runs.length-1;
+ const fi=Math.min(P.length-1,Math.max(0,Math.round((tms-t0-WIN*500)/(HOP*1000)))),G=[0,0,0];P[fi].forEach((v,k)=>G[gi[k]]+=v);
+ return {runs,i,G};
+}
+
+/* ---------- волна, выделение, точка анализа, полоса звуков ---------- */
+const col=(n,f)=>getComputedStyle(document.body).getPropertyValue(n).trim()||f;
+function draw(){
+ const cv=$('phCv'),g=cv.getContext('2d'),W=cv.width,H=cv.height,fg=col('--fg','#15232b'),acc=col('--acc','#1c5f8a'),ref=col('--ref','#d85a30');
+ g.fillStyle=col('--card','#fff');g.fillRect(0,0,W,H);
+ if(!S){g.fillStyle=col('--mut','#56666e');g.font='16px system-ui';g.fillText('Запишите звук или откройте файл',16,H/2);return}
+ const sr=S.sr,v0=V[0],v1=V[1],X=t=>(t-v0)/(v1-v0)*W,wh=H-58,mid=wh/2;
+ if(sel[1]>sel[0]){g.fillStyle=acc;g.globalAlpha=.16;g.fillRect(X(sel[0]),0,X(sel[1])-X(sel[0]),wh);g.globalAlpha=1;g.fillRect(X(sel[0])-1,0,2,wh);g.fillRect(X(sel[1])-1,0,2,wh)}
+ g.strokeStyle=fg;g.globalAlpha=.8;g.beginPath();
+ for(let x=0;x<W;x++){const i0=Math.floor((v0+x/W*(v1-v0))*sr/1000),i1=Math.min(S.d.length,Math.floor((v0+(x+1)/W*(v1-v0))*sr/1000)+1),st=Math.max(1,Math.ceil((i1-i0)/64));
+  let lo=0,hi=0;for(let i=Math.max(0,i0);i<i1;i+=st){const v=S.d[i];if(v<lo)lo=v;if(v>hi)hi=v}
+  g.moveTo(x+.5,mid-hi*mid*.95);g.lineTo(x+.5,mid-lo*mid*.95-(hi-lo<.004?1:0))}
+ g.stroke();g.globalAlpha=1;
+ g.font='13px system-ui';
+ for(const r of LR){const x=X(r.a),w=X(r.b)-x;if(x>W||x+w<0)continue;
+  const t=r.s==='sil'?0:VW[r.s]?1:2;g.fillStyle=t===1?'rgba(55,138,221,.45)':t===2?'rgba(216,90,48,.40)':'rgba(128,128,128,.18)';
+  g.fillRect(x+.5,wh+4,Math.max(1,w-1),34);
+  if(w>14&&r.s!=='sil'){g.fillStyle=fg;g.fillText(r.s,x+w/2-g.measureText(r.s).width/2,wh+26)}}
+ const dt=v1-v0,stp=dt<700?100:dt<1500?200:dt<4000?500:dt<12000?1000:dt<40000?5000:dt<200000?20000:60000;
+ g.fillStyle=col('--mut','#56666e');g.font='12px system-ui';
+ for(let t=Math.ceil(v0/stp)*stp;t<=v1;t+=stp)g.fillText(String(Math.round(t)),Math.min(W-32,X(t)+2),H-6);
+ const pt=+$('phT').value;if(pt>=v0&&pt<=v1){g.fillStyle=ref;g.fillRect(X(pt)-1,0,2,H-48)}
+}
+function upInfo(){$('phI').textContent=S?'Выделение: '+Math.round(sel[0])+'–'+Math.round(sel[1])+' мс · Запись: '+Math.round(dur())+' мс · '+S.sr+' Гц':''}
+function sync(){$('phT').max=Math.max(1,Math.round(dur()));$('phTv').textContent=$('phT').value+' мс'}
+function setS(d,sr){
+ S={d,sr};sel=[0,dur()];V=[0,dur()];LR=[];$('phT').max=Math.max(1,Math.round(dur()));$('phT').value=Math.round(dur()/2);sync();$('phR').innerHTML='';
+ say('Запись загружена: '+(dur()/1000).toFixed(1)+' с.');upInfo();draw();if(M[dia()])show();
+}
+const cv0=$('phCv');
+const px=e=>{const r=cv0.getBoundingClientRect();return Math.min(cv0.width,Math.max(0,(e.clientX-r.left)/r.width*cv0.width))},tx=x=>Math.min(dur(),Math.max(0,V[0]+x/cv0.width*(V[1]-V[0])));
+let drag=null;
+cv0.onpointerdown=e=>{if(!S)return;cv0.setPointerCapture(e.pointerId);drag={x0:px(e),mv:false}};
+cv0.onpointermove=e=>{if(!drag)return;const x=px(e);if(Math.abs(x-drag.x0)>10)drag.mv=true;if(drag.mv){const a=tx(drag.x0),b=tx(x);sel=[Math.min(a,b),Math.max(a,b)];upInfo();draw()}};
+cv0.onpointerup=e=>{if(!drag)return;if(!drag.mv){$('phT').value=Math.round(tx(drag.x0));sync();draw();if(M[dia()]&&!busy)show()}else if(sel[1]-sel[0]<20){sel=[0,dur()];upInfo()}drag=null;draw()};
+cv0.onpointercancel=()=>{drag=null};
+$('phAll').onclick=()=>{if(!S)return;sel=[0,dur()];V=[0,dur()];upInfo();draw()};
+$('phZm').onclick=()=>{if(!S)return;V=(V[0]===0&&V[1]===dur()&&sel[1]-sel[0]>20&&sel[1]-sel[0]<dur()-1)?[sel[0],sel[1]]:[0,dur()];draw()};
+$('phPl').onclick=()=>{if(!S)return;const x=seg();if(!x.length)return;const a=ctx();a.resume();const b=a.createBuffer(1,x.length,S.sr);b.copyToChannel(x,0);const s=a.createBufferSource();s.buffer=b;s.connect(a.destination);s.start()};
+
+/* ---------- источник: микрофон и файл ---------- */
+$('phMic').onclick=async()=>{
+ if(rec){const r=rec;rec=null;r.pr.disconnect();r.src.disconnect();r.st.getTracks().forEach(t=>t.stop());let n=0;r.ch.forEach(c=>n+=c.length);const d=new Float32Array(n);let o=0;r.ch.forEach(c=>{d.set(c,o);o+=c.length});$('phMic').textContent='Запись с микрофона';setS(d,r.ac.sampleRate);return}
+ try{
+  const st=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}}),a=ctx();await a.resume();
+  const src=a.createMediaStreamSource(st),pr=a.createScriptProcessor(4096,1,1),z=a.createGain(),ch=[];let n=0;z.gain.value=0;
+  pr.onaudioprocess=e=>{ch.push(new Float32Array(e.inputBuffer.getChannelData(0)));n+=4096;if(n>a.sampleRate*60)$('phMic').click()};
+  src.connect(pr);pr.connect(z);z.connect(a.destination);rec={st,src,pr,ch,ac:a};$('phMic').textContent='Стоп';say('Идёт запись (до 60 с)…');
+ }catch(e){say('Микрофон недоступен: '+(e.message||e.name))}
+};
+$('phFile').onchange=async e=>{
+ const f=e.target.files[0];e.target.value='';if(!f)return;say('Читаю файл…');await tick();
+ try{
+  const buf=await f.arrayBuffer(),ab=await new Promise((ok,no)=>{const p=ctx().decodeAudioData(buf,ok,no);if(p&&p.catch)p.catch(no)});
+  if(ab.duration>900&&!confirm('Запись длиннее 15 минут, обработка может быть медленной. Продолжить?'))return say('Отменено.');
+  const n=ab.length,d=new Float32Array(n),nc=ab.numberOfChannels;
+  for(let c=0;c<nc;c++){const x=ab.getChannelData(c);for(let i=0;i<n;i++)d[i]+=x[i]/nc}
+  setS(d,ab.sampleRate);
+ }catch(x){say('Не удалось открыть файл: '+(x&&(x.message||x.name)||'формат не поддерживается этим браузером'))}
+};
+
+/* ---------- результат под точкой ---------- */
+function need(){if(!S){say('Сначала запишите звук или откройте файл.');return false}if(!M[dia()]){say('Нет модели: нажмите «Предобучить на синтетике».');return false}return true}
+function show(){
+ sync();if(!need())return;
+ const d=dia(),tms=+$('phT').value,r=recog(tms,d);
+ if(!r){$('phR').textContent='Слишком короткий фрагмент.';return}
+ const {runs,i,G}=r,z=runs[i],nm_=x=>x.s==='sil'?'пауза':x.s,
+  mt=(l,x)=>'<div class="metric"><span class="m">'+l+'</span><b>'+nm_(x)+'</b><span class="m">'+(x.s==='sil'?'':typ(x.s)+', ')+Math.round(x.c*100)+'%, '+Math.round(x.a)+'–'+Math.round(x.b)+' мс</span></div>',
+  ex='<div class="m" style="margin-top:6px">Кадр под точкой: гласная '+Math.round(G[1]*100)+'% · согласная '+Math.round(G[2]*100)+'% · пауза '+Math.round(G[0]*100)+'%</div>';
+ let h;
+ if(z.s!=='sil'&&Math.min(tms-z.a,z.b-tms)>=20)h='<div class="grid" style="grid-template-columns:1fr">'+mt('Звук под точкой',z)+'</div>';
+ else{let pv,nx;
+  if(z.s==='sil'){pv=runs[i-1];nx=runs[i+1]}else if(tms-z.a<z.b-tms){pv=runs[i-1];nx=z}else{pv=z;nx=runs[i+1]}
+  const em=l=>'<div class="metric"><span class="m">'+l+'</span><b>—</b></div>';
+  h='<div class="grid">'+(pv?mt('Предыдущий',pv):em('Предыдущий'))+(nx?mt('Следующий',nx):em('Следующий'))+'</div>';
+ }
+ $('phR').innerHTML=h+ex;LR=runs;draw();
+}
+$('phT').oninput=()=>{sync();draw();if(!busy&&S&&M[dia()])show()};
+$('phGo').onclick=show;
+$('phSel').onclick=()=>{if(!S)return say('Сначала откройте запись.');$('phT').value=Math.round((sel[0]+sel[1])/2);sync();draw();show()};
+$('phAn').onclick=async()=>{
+ if(busy||!need())return;const sr=S.sr,a0=Math.floor(sel[0]*sr/1000),b0=Math.floor(sel[1]*sr/1000);
+ if(b0-a0>30*sr)return say('Фрагмент длиннее 30 с: выделите короче.');
+ busy=true;say('Размечаю фрагмент…');await tick();
+ try{const r=label(a0,b0,dia());if(!r)throw new Error('слишком короткий фрагмент');LR=r.runs;draw();say('Разметка готова: '+r.runs.length+' сегментов (цвет: синий — гласные, оранжевый — согласные).')}
+ catch(e){say('Ошибка: '+(e.message||e.name))}
+ busy=false;
+};
+
+/* ---------- обучение ---------- */
+const sv=async d=>{try{await kv('put','m_'+d,ser(M[d]));return ' Модель сохранена.'}catch(e){return ' Не удалось сохранить модель: '+((e&&e.name)||'хранилище недоступно')+'.'}};
+$('phD').onchange=()=>{$('phR').textContent='';LR=[];say(M[dia()]?'Модель готова'+(M[dia()].acc!=null?', точность на синтетике '+M[dia()].acc+'%':'')+'.':'Для этого диалекта модели ещё нет.');draw()};
+$('phSt').onclick=()=>{stop=true};
+$('phTr').onclick=async()=>{
+ if(busy)return;busy=true;const d=dia();
+ try{say('Готовлю статистику признаков…');await tick();
+  const m=M[d]||newModel(d);
+  await train(d,+$('phN').value,2e-3,synB,'Синтетика');
+  const ev=evalSyn(d);m.acc=ev.a;const sv_=await sv(d);
+  say('Готово. На новых синтетических фразах: точность '+ev.a+'%, гласные найдены в '+ev.v+'% кадров.'+sv_);
+ }catch(e){say('Ошибка: '+((e&&(e.name+' '+(e.message||'')))||'неизвестная'))}
+ busy=false;
+};
+function parse(d){
+ const tk=$('phTx').value.trim().split(/\s+/).filter(Boolean).map(s=>s.normalize('NFC')),ix=DIAL[d].ix,bad=tk.filter(s=>s!=='sil'&&ix[s]===undefined);
+ if(!tk.length)throw new Error('введите фонемы записи');
+ if(bad.length)throw new Error('нет в списке диалекта: '+bad.join(' '));
+ return [0,...tk.map(s=>ix[s]),0];
+}
+function alignSel(d){
+ const x=seg(),sr=S.sr;if(x.length>30*sr)throw new Error('фрагмент длиннее 30 с');
+ const m=M[d],F=frames(x,sr,peak()),P=F.map((_,t)=>fwd(m.L,nm(m,stack(F,t))).p),lab=forced(P.map(p=>Array.from(p,v=>Math.log(v+1e-6))),parse(d));
+ return {F,lab};
+}
+function runsOf(lab,d){const r=[];let s=0;for(let k=1;k<=lab.length;k++)if(k===lab.length||lab[k]!==lab[s]){r.push({s:DIAL[d].cl[lab[s]],a:sel[0]+(s*HOP+WIN/2-HOP/2)*1000,b:sel[0]+(k*HOP+WIN/2-HOP/2)*1000,c:1});s=k}return r}
+$('phAl').onclick=()=>{
+ if(busy||!need())return;
+ try{const d=dia(),{lab}=alignSel(d);LR=runsOf(lab,d);draw();say('Выравнивание готово: границы показаны на волне.')}catch(e){say('Ошибка: '+(e.message||e.name))}
+};
+$('phFt').onclick=async()=>{
+ if(busy||!need())return;busy=true;const d=dia();
+ try{const {F,lab}=alignSel(d);
+  for(let t=0;t<F.length;t++)REAL[d].push({x:stack(F,t),y:lab[t]});
+  if(REAL[d].length>20000)REAL[d]=REAL[d].slice(-20000);
+  await train(d,150,5e-4,realB,'Дообучение');
+  const sv_=await sv(d);
+  say('Готово. Кадров реальных записей: '+REAL[d].length+'.'+sv_);
+ }catch(e){say('Ошибка: '+(e.message||e.name))}
+ busy=false;
+};
+(async()=>{
+ for(const d in DIAL){try{const o=des(await kv('get','m_'+d),d);if(o)M[d]=o}catch(e){}}
+ $('phD').onchange();draw();
+})();
+
+})();
+</script>
+</body>
+</html>
